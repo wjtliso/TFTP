@@ -1,0 +1,383 @@
+#include<Winsock2.h>
+#include  <sys/types.h>
+#include  <time.h>
+#include<stdio.h>
+#include<stdlib.h>
+#include<iostream>
+#include<string>
+#define SIZE 3000
+using namespace std;
+using std::string;
+
+char recvBuf[SIZE];
+char sendBuf[SIZE];
+
+WORD wVersionRequested;
+WSADATA wsaData;
+int err;
+SOCKET sockClient;
+SOCKADDR_IN addrSrv;
+int len;
+
+
+
+main()
+{
+      int send_num,i=0,j=0;
+      string ip_addr,rfp,wfp;
+      int choice=0,state=0,end=0,packet_num=1;
+      int length=0;
+      unsigned char opcode,block_l,block_h;
+      unsigned short int block,block_size=512;
+      FILE* fp;
+      FILE* log;
+
+      printf("Please input the ip address\n");
+      cin>>ip_addr;
+
+     wVersionRequested=MAKEWORD(1,1);
+
+      err=WSAStartup(wVersionRequested,&wsaData);
+      if(err!=0){
+         return -1;
+      }
+
+      if(LOBYTE(wsaData.wVersion)!=1||HIBYTE(wsaData.wVersion)!=1){
+         return -1;
+      }
+
+      sockClient=socket(AF_INET,SOCK_DGRAM,0);
+
+      addrSrv.sin_addr.S_un.S_addr=inet_addr(ip_addr.c_str());
+      addrSrv.sin_family=AF_INET;
+      addrSrv.sin_port=htons(69);
+
+      len=sizeof(SOCKADDR);
+
+      printf("\nConnect   OK...\n");
+      log=fopen("log.txt","w");
+
+      block=0;
+      fd_set  fdR;
+      struct  timeval timeout;
+      timeout.tv_sec=1;
+      timeout.tv_usec=0;
+
+      while((choice!=1)&&(choice!=2)){
+         printf("1.Upload\n2.Download\n3.Set the size of the packet, Default is 512\nPlease choose the operation:\n");
+         scanf("%d",&choice);
+
+         switch(choice){
+            case 1:
+              //put the file;
+              printf("Input the path of the file:\n");
+              cin>>rfp;
+              printf("Input the file name:\n");
+              cin>>wfp;
+              fp=fopen(rfp.c_str(),"rb");
+              if(!fp){
+                 printf("Could not open the file!\n");
+                 end=1;
+              }
+              else{
+                 sendBuf[0]=0x00;
+                 sendBuf[1]=0x02;
+                 for(i=0;wfp[i];i++)
+                    sendBuf[i+2]=wfp[i];
+                 i+=2;
+                 sendBuf[i++]=0x00;
+                 sendBuf[i++]='o';
+                 sendBuf[i++]='c';
+                 sendBuf[i++]='t';
+                 sendBuf[i++]='e';
+                 sendBuf[i++]='t';
+                 sendBuf[i++]=0x00;
+                 if(block_size!=512){
+                    sendBuf[i++]=block_size/256;
+                    sendBuf[i++]=block_size%256;
+                    sendBuf[i++]=0x00;
+                 }
+                 send_num=i;
+                 sendto(sockClient,sendBuf,send_num,0,(SOCKADDR*)&addrSrv,len);
+                 state=1;
+              }
+              break;
+            case 2:
+              //get the file;
+              printf("Input the file name you want to download:\n");
+              cin>>rfp;
+              printf("Input the path where you want to save:\n");
+              cin>>wfp;
+              fp=fopen(wfp.c_str(),"wb");
+              if(!fp){
+                 printf("Could not open the file!\n");
+                 end=1;
+              }
+              else{
+                 sendBuf[0]=0x00;
+                 sendBuf[1]=0x01;
+                 for(i=0;rfp[i];i++)
+                    sendBuf[i+2]=rfp[i];
+                 i+=2;
+                 sendBuf[i++]=0x00;
+                 sendBuf[i++]='o';
+                 sendBuf[i++]='c';
+                 sendBuf[i++]='t';
+                 sendBuf[i++]='e';
+                 sendBuf[i++]='t';
+                 sendBuf[i++]=0x00;
+                 if(block_size!=512){
+                    sendBuf[i++]=block_size/256;
+                    sendBuf[i++]=block_size%256;
+                    sendBuf[i++]=0x00;
+                 }
+                 send_num=i;
+                 sendto(sockClient,sendBuf,send_num,0,(SOCKADDR*)&addrSrv,len);
+                 state=2;
+                 block++;
+              }
+              break;
+            case 3:
+                 printf("Set the size of the parket(Max is 2990)\n");
+                 scanf("%d",&block_size);
+                 break;
+
+            default:
+              //error choice;
+              printf("Operation is not exist, Please try again!\n");
+              break;
+      }
+    }
+
+
+      while(end!=1){
+         FD_ZERO(&fdR);
+         FD_SET(sockClient, &fdR);
+         switch (select(sockClient + 1, &fdR, NULL,NULL, &timeout)) {
+                case -1:
+                        break;
+                case 0:
+                        //timeout hanled by u;
+                           fprintf(log,"\ntime out! transfer again!\n");
+                           printf("\ntime out! transfer again!\n");
+                           sendto(sockClient,sendBuf,send_num,0,(SOCKADDR*)&addrSrv,len);
+                           //retransfer++;
+                        break;
+                default:
+                        if (FD_ISSET(sockClient,&fdR)) {
+                           length=recvfrom(sockClient,recvBuf,3000,0,(SOCKADDR*)&addrSrv,&len);
+                           printf("get a packet!\n");
+                           fprintf(log,"get a packet!\n");
+                           if(recvBuf[1]==0x03||recvBuf[1]==0x04){
+                              fprintf(log,"packet block is %d\n",recvBuf[2]*256+recvBuf[3]);
+                              printf("packet block is %d\n",recvBuf[2]*256+recvBuf[3]);
+                           }
+                           if(length==-1){
+                              fprintf(log,"client disconnect!\n");
+                              fclose(log);
+                              closesocket(sockClient);
+                              WSACleanup();
+                              return 0;
+                           }
+
+                           opcode=(unsigned char)recvBuf[1];
+                           switch(state){
+                              case 1:
+                                 if(opcode==0x04){
+                                    block_l=recvBuf[3];
+                                    block_h=recvBuf[2];
+                                    if((block_h*256+block_l)==block){
+                                       sendBuf[0]=0x00;
+                                       sendBuf[1]=0x03;
+                                       if(block<65535)
+                                          block++;
+                                       else
+                                          block=0;
+                                       block_h=block/256;
+                                       block_l=block%256;
+                                       sendBuf[2]=block_h;
+                                       sendBuf[3]=block_l;
+                                       j=0;
+                                       while((j<block_size)&&(fread(&sendBuf[j+4],1,1,fp)))
+                                           j++;
+                                       send_num=j+4;
+                                       sendto(sockClient,sendBuf,send_num,0,(SOCKADDR*)&addrSrv,len);
+                                       packet_num++;
+                                       if(j<block_size){
+                                          end=1;
+                                          printf("Finish:%d\n",packet_num);
+                                          fprintf(log,"Finish:%d\n",packet_num);
+                                          fclose(fp);
+                                          fclose(log);
+                                          state=0;
+                                          packet_num=1;
+                                       }
+                                    }
+                                 }
+                                 else{
+                                      if(opcode==0x05){
+                                         switch(recvBuf[3]){
+                                            case 0x00:
+                                                 printf("Not defined, see error message (if any).\n");
+                                                 fprintf(log,"Not defined, see error message (if any).\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x01:
+                                                 printf("File not found.\n");
+                                                 fprintf(log,"File not found.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x02:
+                                                 printf("Access violation.\n");
+                                                 fprintf(log,"Access violation.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x03:
+                                                 printf("Disk full or allocation exceeded.\n");
+                                                 fprintf(log,"Disk full or allocation exceeded.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x04:
+                                                 printf("Illegal TFTP operation.\n");
+                                                 fprintf(log,"Illegal TFTP operation.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x05:
+                                                 printf("Unknown transfer ID.\n");
+                                                 fprintf(log,"Unknown transfer ID.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x06:
+                                                 printf("File already exists.\n");
+                                                 fprintf(log,"File already exists.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x07:
+                                                 printf("No such user.\n");
+                                                 fprintf(log,"No such user.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                         }
+                                      }
+                                 }
+
+                                 break;
+                              case 2:
+                                   if(opcode==0x03){
+                                      block_l=recvBuf[3];
+                                      block_h=recvBuf[2];
+                                      if((block_h*256+block_l)==block){
+                                         packet_num++;
+                                         if(block<65535)
+                                            block++;
+                                         else
+                                            block=0;
+                                         j=4;
+                                         for(j;j<length;j++)
+                                            fwrite(&recvBuf[j],1,1,fp);
+                                         sendBuf[0]=0x00;
+                                         sendBuf[1]=0x04;
+                                         sendBuf[2]=block_h;
+                                         sendBuf[3]=block_l;
+                                         send_num=4;
+                                         sendto(sockClient,sendBuf,send_num,0,(SOCKADDR*)&addrSrv,len);
+                                         if(length<(block_size+4)){
+                                            end=1;
+                                            printf("Finish:%d\n",packet_num);
+                                            printf("Finish:%d\n",packet_num);
+                                            fclose(fp);
+                                            fclose(log);
+                                            state=0;
+                                            packet_num=1;
+                                         }
+                                      }
+                                   }
+                                   else{
+                                      if(opcode==0x05){
+                                         switch(recvBuf[3]){
+                                            case 0x00:
+                                                 printf("Not defined, see error message (if any).\n");
+                                                 fprintf(log,"Not defined, see error message (if any).\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x01:
+                                                 printf("File not found.\n");
+                                                 fprintf(log,"File not found.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x02:
+                                                 printf("Access violation.\n");
+                                                 fprintf(log,"Access violation.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x03:
+                                                 printf("Disk full or allocation exceeded.\n");
+                                                 fprintf(log,"Disk full or allocation exceeded.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x04:
+                                                 printf("Illegal TFTP operation.\n");
+                                                 fprintf(log,"Illegal TFTP operation.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x05:
+                                                 printf("Unknown transfer ID.\n");
+                                                 fprintf(log,"Unknown transfer ID.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x06:
+                                                 printf("File already exists.\n");
+                                                 fprintf(log,"File already exists.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                            case 0x07:
+                                                 printf("No such user.\n");
+                                                 fprintf(log,"No such user.\n");
+                                                 fclose(fp);
+                                                 fclose(log);
+                                                 end=1;
+                                                 break;
+                                         }
+                                      }
+                                   }
+                                   break;
+                           }
+                }
+                break;
+         }
+      }
+
+      closesocket(sockClient);
+      WSACleanup();
+      return 0;
+}
