@@ -1,0 +1,626 @@
+#include<Winsock2.h>
+#include  <sys/types.h>
+#include  <time.h>
+#include<stdio.h>
+#include<iostream>
+#include<string>
+#include<vector>
+#include<fstream>
+
+using namespace std;
+using std::string;
+
+char recvBuf[3000];
+char sendBuf[3000];
+char tempBuf[400];
+//SOCKET sockSrv;
+SOCKADDR_IN addrClient;
+int len;
+
+
+main()
+{
+      WORD wVersionRequested;
+      WSADATA wsaData;
+      char need;
+      int err;
+      int length;
+      int state=0,start=0,end=0,retransfer=0,count,num=0;
+      int i,j,k,send_num,last_one=0;
+      unsigned char opcode,block_l,block_h;
+      unsigned short int block=0x0001,recvblock,retrans_block,block_size=512;
+      unsigned char ch;
+      string filename="",error_message;
+      FILE *fp;
+      FILE *log;
+
+      //create socket
+      wVersionRequested=MAKEWORD(1,1);
+
+      err=WSAStartup(wVersionRequested,&wsaData);
+      if(err!=0){
+         return -1;
+      }
+
+      if(LOBYTE(wsaData.wVersion)!=1||HIBYTE(wsaData.wVersion)!=1){
+         WSACleanup();
+         return -1;
+      }
+
+      SOCKET sockSrv=socket(AF_INET,SOCK_DGRAM,0);
+
+      SOCKADDR_IN addrSrv;
+      addrSrv.sin_addr.S_un.S_addr=htonl(INADDR_ANY);
+      addrSrv.sin_family=AF_INET;
+      addrSrv.sin_port=htons(69);
+
+      bind(sockSrv,(SOCKADDR*)&addrSrv,sizeof(SOCKADDR));
+
+      len=sizeof(SOCKADDR);
+
+      cout<<"connect succeed!\n";
+
+      fd_set  fdR;
+      struct  timeval timeout;
+      timeout.tv_sec=1;
+      timeout.tv_usec=0;
+
+      state=0;
+      block=0;
+      log=fopen("log.txt","w");
+      srand(time(NULL));
+
+      while(end!=1){
+         FD_ZERO(&fdR);
+         FD_SET(sockSrv, &fdR);
+
+         //over time, resend
+         switch (select(sockSrv + 1, &fdR, NULL,NULL, &timeout)) {
+                case -1:
+                        break;
+                case 0:
+                        //timeout hanled by u;
+                        if(start!=0){
+                           if(retrans_block==block)
+                              count++;
+                           else{
+                              retrans_block=block;
+                              count=1;
+                           }
+                           //if a packet resend over 10 times, suppose the network do not work well.
+                           if(count<=10){
+                              fprintf(log,"\ntime out! transfer again!\n");
+                              sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                              retransfer++;
+                           }
+                           else
+                              end=1;
+                        }
+                        break;
+                default:
+                        start=1;
+                        if (FD_ISSET(sockSrv,&fdR)) {
+                                /*now u read or recv something;
+                                 if sockfd is father and
+                                server socket, u can now
+                                accept() */
+                           if((rand()%100)>=2){
+                                length=recvfrom(sockSrv,recvBuf,3000,0,(SOCKADDR*)&addrClient,&len);
+                                fprintf(log,"get a packet ,length is %d\n",length);
+                                printf("get a packet!\n");
+                                if(recvBuf[1]==0x03||recvBuf[1]==0x04){
+                                   fprintf(log,"packet block is %d\n",recvBuf[2]*256+recvBuf[3]);
+                                   printf("packet block is %d\n",recvBuf[2]*256+recvBuf[3]);
+                                }
+                                /*for(k=0;k<length;k++)
+                                   printf("%x ",recvBuf[k]);
+                                printf("\n");*/
+                                if(length==-1){
+                                   fprintf(log,"client disconnect!\n");
+                                   fclose(log);
+                                   end=1;
+                                }
+
+                                opcode=(unsigned char)recvBuf[1];
+                                if(state==0){
+                                   switch(opcode){
+                                      case 0x01:
+                                        //read
+                                        i=2;
+                                        while(recvBuf[i]){
+                                           filename+=recvBuf[i];
+                                           i++;
+                                        }
+
+                                        if(length==(i+10)){
+                                           block_size=recvBuf[i+7]*256+recvBuf[i+8];
+                                           printf("block_size=%d\n",block_size);
+                                        }
+
+                                        fp=fopen(filename.c_str(),"rb");
+                                        if(!fp){
+                                           fprintf(log,"error!\n");
+                                           state=3;
+                                           break;
+                                        }
+                                        fprintf(log,"read the file %s\n",filename.c_str());
+                                        j=0;
+                                        //send the answer packet
+                                        sendBuf[0]=0x00;
+                                        sendBuf[1]=0x03;
+                                        block_l=block%256;
+                                        block_h=block/256;
+                                        sendBuf[2]=0x00;
+                                        sendBuf[3]=0x01;
+                                        while((j<block_size)&&(fread(&sendBuf[j+4],1,1,fp)))
+                                           j++;
+                                        send_num=j+4;
+                                        if((rand()%100)>=2)
+                                           sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                        block=0x0001;
+                                        state=1;
+
+                                        break;
+
+                                      case 0x02:
+                                        //write
+                                        i=2;
+                                        while(recvBuf[i]){
+                                           filename+=recvBuf[i];
+                                           i++;
+                                        }
+
+                                        if(length==(i+10))
+                                           block_size=recvBuf[i+7]*256+recvBuf[i+8];
+
+                                        fp=fopen(filename.c_str(),"r");
+
+                                        if(fp){
+                                           error_message="File already exists.\n";
+                                           sendBuf[0]=0x00;
+                                           sendBuf[1]=0x05;
+                                           sendBuf[2]=0x00;
+                                           sendBuf[3]=0x06;
+                                           j=4;
+                                           while(error_message[j-4]!='\0'){
+                                               sendBuf[j]=error_message[j-4];
+                                               j++;
+                                           }
+                                           sendBuf[j]=0x00;
+                                           send_num=j+1;
+                                           if((rand()%100)>2)
+                                              sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                           state=0;
+                                           block=0;
+                                           fprintf(log,"error message:%s\n",error_message.c_str());
+                                           printf("error message:%s\n",error_message.c_str());
+                                           fclose(log);
+                                           end=1;
+                                        }
+
+                                        else{
+                                           fp=fopen(filename.c_str(),"wb");
+                                           if(!fp){
+                                              fprintf(log,"error!\n");
+                                              state=3;
+                                              break;
+                                           }
+                                           fprintf(log,"write the file %s\n",filename.c_str());
+                                           block_l=block%256;
+                                           block_h=block/256;
+                                           sendBuf[0]=0x00;
+                                           sendBuf[1]=0x04;
+                                           sendBuf[2]=0x00;
+                                           sendBuf[3]=0x00;
+                                           send_num=4;
+                                           if((rand()%1000)>=2)
+                                              sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                           state=2;
+                                           block=1;
+                                        }
+                                        break;
+
+                                      default:
+                                        //error
+                                        break;
+                                   }
+                                }
+                                else{
+                                   switch(state){
+                                      case 1:
+                                           //read data
+
+                                           if(opcode==0x04){
+                                              fprintf(log,"read data\n");
+                                              block_l=(unsigned char)recvBuf[3];
+                                              block_h=(unsigned char)recvBuf[2];
+                                              recvblock=block_h*256+block_l;
+                                              if(recvblock==block){
+                                                 j=0;
+                                                 if(block<65535)
+                                                    block++;
+                                                 else{
+                                                    block=0;
+                                                    num++;
+                                                 }
+                                                 sendBuf[0]=0x00;
+                                                 sendBuf[1]=0x03;
+                                                 block_l=block%256;
+                                                 block_h=block/256;
+                                                 sendBuf[2]=block_h;
+                                                 sendBuf[3]=block_l;
+
+                                                    while((j<block_size)&&(fread(&sendBuf[j+4],1,1,fp)))
+                                                       j++;
+
+
+                                                    if(j<block_size){
+                                                          fclose(fp);
+                                                          fprintf(log,"finish\n");
+                                                          printf("finish\n");
+                                                          fprintf(log,"the sum of the packet is %d\n",num*65536+block);
+                                                          printf("the sum of the packet is %d\n",num*65536+block);
+                                                          fprintf(log,"the number of retransfer is %d\n",retransfer);
+                                                          printf("the number of retransfer is %d\n",retransfer);
+                                                       }
+                                                       send_num=j+4;
+                                                    if((rand()%100)>=2)
+                                                       sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+
+
+                                              }
+                                           }
+                                           else{
+                                              fprintf(log,"error message!\n");
+                                           }
+                                           break;
+                                      case 2:
+                                           //write data
+
+                                           if(opcode==0x03){
+                                              fprintf(log,"write data!\n");
+                                              block_l=recvBuf[3];
+                                              block_h=recvBuf[2];
+                                              if((block_h*256+block_l)==block){
+                                                 j=4;
+                                                 for(j;j<length;j++){
+                                                    ch=recvBuf[j];
+                                                    fwrite(&ch,1,1,fp);
+                                                 }
+                                                 sendBuf[0]=0x00;
+                                                 sendBuf[1]=0x04;
+                                                 sendBuf[2]=block_h;
+                                                 sendBuf[3]=block_l;
+                                                 send_num=4;
+                                                 if((rand()%100)>=2)
+                                                    sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+
+                                                 if(length<(block_size+4)){
+                                                    fclose(fp);
+                                                    fprintf(log,"transfer succeed!\n");
+                                                    printf("transfer succeed!\n");
+                                                    fprintf(log,"the sum of the packet is %d\n",num*65536+block);
+                                                    printf("the sum of the packet is %d\n",num*65536+block);
+                                                    fprintf(log,"the number of retransfer is %d\n",retransfer);
+                                                    printf("the number of retransfer is %d\n",retransfer);
+                                                 }
+
+                                                 if(block<65535)
+                                                    block++;
+                                                 else{
+                                                    block=0;
+                                                    num++;
+                                                 }
+                                              }
+                                           }
+                                           else{
+                                              fprintf(log,"error message!\n");
+                                           }
+                                           break;
+                                      default:
+
+                                           sendBuf[0]=0x00;
+                                           sendBuf[1]=0x05;
+                                           sendBuf[2]=0x00;
+                                           sendBuf[3]=0x01;
+                                           error_message="file not exit";
+                                           j=4;
+                                           while(error_message[j-4]!='\0'){
+                                              sendBuf[j]=error_message[j-4];
+                                              j++;
+                                           }
+                                           sendBuf[j]=0x00;
+                                           send_num=j+1;
+                                           if((rand()%100)>=2)
+                                              sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                           state=0;
+                                           block=0;
+                                           fprintf(log,"error message: %s\n",error_message.c_str());
+                                           printf("error message: %s\n",error_message.c_str());
+                                           fclose(log);
+                                           end=1;
+                                           break;
+                                   }
+                                   }
+                           }
+                        }
+        }
+
+      }
+      }
+            while(end!=1){
+         FD_ZERO(&fdR);
+         FD_SET(sockSrv, &fdR);
+
+
+         switch (select(sockSrv + 1, &fdR, NULL,NULL, &timeout)) {
+                case -1:
+                        break;
+                case 0:
+                        //timeout hanled by u;
+                        if(start!=0){
+                           if(retrans_block==block)
+                              count++;
+                           else{
+                              retrans_block=block;
+                              count=1;
+                           }
+                           if(count<=10){
+                              fprintf(log,"\ntime out! transfer again!\n");
+                              sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                              retransfer++;
+                           }
+                           else
+                              end=1;
+                        }
+                        break;
+                default:
+                        start=1;
+                        if (FD_ISSET(sockSrv,&fdR)) {
+                                /*now u read or recv something;
+                                 if sockfd is father and
+                                server socket, u can now
+                                accept() */
+                           //if((rand()%100)>=2){
+                                length=recvfrom(sockSrv,recvBuf,3000,0,(SOCKADDR*)&addrClient,&len);
+                                fprintf(log,"get a packet ,length is %d\n",length);
+                                printf("get a packet!\n");
+                                if(recvBuf[1]==0x03||recvBuf[1]==0x04){
+                                   fprintf(log,"packet block is %d\n",recvBuf[2]*256+recvBuf[3]);
+                                   printf("packet block is %d\n",recvBuf[2]*256+recvBuf[3]);
+                                }
+                                /*for(k=0;k<length;k++)
+                                   printf("%x ",recvBuf[k]);
+                                printf("\n");*/
+                                if(length==-1){
+                                   fprintf(log,"client disconnect!\n");
+                                   fclose(log);
+                                   closesocket(sockSrv);
+                                   WSACleanup();
+                                   return 0;
+                                }
+
+
+                                opcode=(unsigned char)recvBuf[1];
+                                if(state==0){
+                                   switch(opcode){
+                                      case 0x01:
+                                        //read
+                                        i=2;
+                                        while(recvBuf[i]){
+                                           filename+=recvBuf[i];
+                                           i++;
+                                        }
+
+                                        if(length==(i+10)){
+                                           block_size=recvBuf[i+7]*256+recvBuf[i+8];
+                                           printf("block_size=%d\n",block_size);
+                                        }
+
+                                        fp=fopen(filename.c_str(),"rb");
+                                        if(!fp){
+                                           fprintf(log,"error!\n");
+                                           state=3;
+                                           break;
+                                        }
+                                        fprintf(log,"read the file %s\n",filename.c_str());
+                                        j=0;
+                                        sendBuf[0]=0x00;
+                                        sendBuf[1]=0x03;
+                                        block_l=block%256;
+                                        block_h=block/256;
+                                        sendBuf[2]=0x00;
+                                        sendBuf[3]=0x01;
+                                        while((j<block_size)&&(fread(&sendBuf[j+4],1,1,fp)))
+                                           j++;
+                                        send_num=j+4;
+                                        //if((rand()%100)>=2)
+                                           sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                        block=0x0001;
+                                        state=1;
+
+                                        break;
+
+                                      case 0x02:
+                                        //write
+                                        i=2;
+                                        while(recvBuf[i]){
+                                           filename+=recvBuf[i];
+                                           i++;
+                                        }
+
+                                        if(length==(i+10)){
+                                           block_size=recvBuf[i+7]*256+recvBuf[i+8];
+                                           printf("block_size=%d\n",block_size);
+                                        }
+
+                                        fp=fopen(filename.c_str(),"r");
+                                        if(fp){
+                                           error_message="File already exists.\n";
+                                           sendBuf[0]=0x00;
+                                           sendBuf[1]=0x05;
+                                           sendBuf[2]=0x00;
+                                           sendBuf[3]=0x06;
+                                           j=4;
+                                           while(error_message[j-4]!='\0'){
+                                               sendBuf[j]=error_message[j-4];
+                                               j++;
+                                           }
+                                           sendBuf[j]=0x00;
+                                           send_num=j+1;
+                                           //if((rand()%100)>2)
+                                              sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                           state=0;
+                                           block=0;
+                                           fprintf(log,"error message:%s\n",error_message.c_str());
+                                           printf("error message:%s\n",error_message.c_str());
+                                           fclose(log);
+                                           end=1;
+                                        }
+                                        else{
+                                           fp=fopen(filename.c_str(),"wb");
+                                           if(!fp){
+                                              fprintf(log,"error!\n");
+                                              state=3;
+                                              break;
+                                           }
+                                           fprintf(log,"write the file %s\n",filename.c_str());
+                                           block_l=block%256;
+                                           block_h=block/256;
+                                           sendBuf[0]=0x00;
+                                           sendBuf[1]=0x04;
+                                           sendBuf[2]=0x00;
+                                           sendBuf[3]=0x00;
+                                           send_num=4;
+                                           //if((rand()%1000)>=2)
+                                              sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                           state=2;
+                                           block=1;
+                                        }
+                                        break;
+
+                                      default:
+                                        //error
+                                        break;
+                                   }
+                                }
+                                else{
+                                   switch(state){
+                                      case 1:
+                                           //read data
+                                           if(opcode==0x04){
+                                              fprintf(log,"read data\n");
+                                              block_l=(unsigned char)recvBuf[3];
+                                              block_h=(unsigned char)recvBuf[2];
+                                              recvblock=block_h*256+block_l;
+                                              if(recvblock==block){
+                                                 j=0;
+                                                 if(block<65535)
+                                                    block++;
+                                                 else
+                                                    block=0;
+                                                 sendBuf[0]=0x00;
+                                                 sendBuf[1]=0x03;
+                                                 block_l=block%256;
+                                                 block_h=block/256;
+                                                 sendBuf[2]=block_h;
+                                                 sendBuf[3]=block_l;
+
+                                                    while((j<block_size)&&(fread(&sendBuf[j+4],1,1,fp)))
+                                                       j++;
+
+
+                                                    if(j<block_size){
+                                                          end=1;
+                                                          state=0;
+                                                          block=0;
+                                                          fclose(fp);
+                                                          fprintf(log,"finish\n");
+                                                          printf("finish\n");
+                                                          fprintf(log,"the number of retransfer is %d\n",retransfer);
+                                                          printf("the number of retransfer is %d\n",retransfer);
+                                                          fclose(log);
+                                                       }
+                                                       send_num=j+4;
+                                                    //if((rand()%100)>2)
+                                                       sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+
+
+                                              }
+                                           }
+                                           else{
+                                              fprintf(log,"error message!\n");
+                                           }
+                                           break;
+                                      case 2:
+                                           //write data
+                                           if(opcode==0x03){
+                                              fprintf(log,"write data!\n");
+                                              block_l=recvBuf[3];
+                                              block_h=recvBuf[2];
+                                              if((block_h*256+block_l)==block){
+                                                 j=4;
+                                                 for(j;j<length;j++){
+                                                    ch=recvBuf[j];
+                                                    fwrite(&ch,1,1,fp);
+                                                 }
+                                                 sendBuf[0]=0x00;
+                                                 sendBuf[1]=0x04;
+                                                 sendBuf[2]=block_h;
+                                                 sendBuf[3]=block_l;
+                                                 send_num=4;
+                                                 //if((rand()%100)>=2)
+                                                    sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                                 if(length<(block_size+4)){
+                                                    fclose(fp);
+                                                    block=0;
+                                                    state=0;
+                                                    fprintf(log,"transfer succeed!\n");
+                                                    printf("transfer succeed!\n");
+                                                    fprintf(log,"the number of retransfer is %d\n",retransfer);
+                                                    printf("the number of retransfer is %d\n",retransfer);
+                                                    fclose(log);
+                                                 }
+                                                 if(block<65535)
+                                                    block++;
+                                                 else
+                                                    block=0;
+                                              }
+                                           }
+                                           else{
+                                              fprintf(log,"error message!\n");
+                                           }
+                                           break;
+                                      default:
+                                           sendBuf[0]=0x00;
+                                           sendBuf[1]=0x05;
+                                           sendBuf[2]=0x00;
+                                           sendBuf[3]=0x01;
+                                           error_message="file not exit";
+                                           j=4;
+                                           while(error_message[j-4]!='\0'){
+                                              sendBuf[j]=error_message[j-4];
+                                              j++;
+                                           }
+                                           sendBuf[j]=0x00;
+                                           send_num=j+1;
+                                           //if((rand()%100)>=2)
+                                              sendto(sockSrv,sendBuf,send_num,0,(SOCKADDR*)&addrClient,len);
+                                           state=0;
+                                           block=0;
+                                           fprintf(log,"error message: %s\n",error_message.c_str());
+                                           printf("error message: %s\n",error_message.c_str());
+                                           fclose(log);
+                                           end=1;
+                                           break;
+                                   }
+                                   }
+                           //}
+                        }
+        }
+
+      }
+      }
+
+      return 0;
+}
